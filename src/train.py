@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data import TensorDataset, random_split
 
 from transformers import RobertaTokenizer
-from transformers import AdamW, RobertaConfig
+from transformers import RobertaConfig
+from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 
 from models.models import BiEncoderAttentionWithRationaleClassification
