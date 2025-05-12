@@ -140,15 +140,12 @@ class BiEncoderAttentionWithRationaleClassification(nn.Module):
 
 		self.apply(self._init_weights)
 
-		self.seeker_encoder = SeekerEncoder.from_pretrained(
-								"roberta-base", # Use the 12-layer BERT model, with an uncased vocab.
-								output_attentions = False, # Whether the model returns attentions weights.
-								output_hidden_states = False)
+		self.seeker_encoder = RobertaModel.from_pretrained("roberta-base")
+		self.responder_encoder = RobertaModel.from_pretrained("roberta-base")
 
-		self.responder_encoder = ResponderEncoder.from_pretrained(
-								"roberta-base", # Use the 12-layer BERT model, with an uncased vocab.
-								output_attentions = False, # Whether the model returns attentions weights.
-								output_hidden_states = False)
+		# Freeze seeker encoder
+		for param in self.seeker_encoder.parameters():
+			param.requires_grad = False
 
 	
 	def _init_weights(self, module):
@@ -185,42 +182,32 @@ class BiEncoderAttentionWithRationaleClassification(nn.Module):
 		lambda_EI=1,
 		lambda_RE=0.1
 	):
-		outputs_SP = self.seeker_encoder.roberta(
-			input_ids_SP,
-			attention_mask=attention_mask_SP,
-			token_type_ids=token_type_ids_SP,
-			position_ids=position_ids_SP,
-			head_mask=head_mask_SP,
-			inputs_embeds=inputs_embeds_SP,
-		)
+		# Get seeker post encodings
+		outputs_SP = self.seeker_encoder(input_ids=input_ids_SP, attention_mask=attention_mask_SP)
 
-
-		outputs_RP = self.responder_encoder.roberta(
-			input_ids_RP,
-			attention_mask=attention_mask_RP,
-			token_type_ids=token_type_ids_RP,
-			position_ids=position_ids_RP,
-			head_mask=head_mask_RP,
-			inputs_embeds=inputs_embeds_RP,
-		)
+		# Get response post encodings
+		outputs_RP = self.responder_encoder(input_ids=input_ids_RP, attention_mask=attention_mask_RP)
 
 		sequence_output_SP = outputs_SP[0]
 		sequence_output_RP = outputs_RP[0]
 
-		sequence_output_RP = sequence_output_RP + self.dropout(self.attn(sequence_output_RP, sequence_output_SP, sequence_output_SP))
+		# Apply attention
+		sequence_output_RP = sequence_output_RP + self.dropout(
+			self.attn(sequence_output_RP, sequence_output_SP, sequence_output_SP)
+		)
 
-		logits_empathy = self.empathy_classifier(sequence_output_RP[:, 0, :]) # (sequence_output_RP[:, 0, :]) #(torch.tanh(concat_tensor))
+		# Get empathy classification logits
+		logits_empathy = self.empathy_classifier(sequence_output_RP[:, 0, :])
 		
+		# Get rationale classification logits
 		sequence_output = self.dropout(sequence_output_RP)
 		logits_rationales = self.rationale_classifier(sequence_output)
-		outputs = (logits_empathy,logits_rationales) + outputs_RP[2:]
 
 		loss_rationales = 0.0
 		loss_empathy = 0.0
 
 		if rationale_labels is not None:
 			loss_fct = CrossEntropyLoss()
-			# Only keep active parts of the loss
 			if attention_mask_RP is not None:
 				active_loss = attention_mask_RP.view(-1) == 1
 				active_logits = logits_rationales.view(-1, self.rationale_num_labels)
@@ -234,12 +221,10 @@ class BiEncoderAttentionWithRationaleClassification(nn.Module):
 		if empathy_labels is not None:
 			loss_fct = CrossEntropyLoss()
 			loss_empathy = loss_fct(logits_empathy.view(-1, self.empathy_num_labels), empathy_labels.view(-1))
-
 			loss = lambda_EI * loss_empathy + lambda_RE * loss_rationales
+			return loss, loss_empathy, loss_rationales, logits_empathy, logits_rationales
 
-			outputs = (loss, loss_empathy, loss_rationales) + outputs
-
-		return outputs  # (loss), (scores_empathy, scores_rationales), (hidden_states), (attentions)
+		return logits_empathy, logits_rationales
 
 
 
@@ -257,7 +242,7 @@ class RobertaClassificationHead(nn.Module):
 		x = features[:, :]  # take <s> token (equiv. to [CLS])
 		x = self.dropout(x)
 		x = self.dense(x)
-		x = torch.relu(x)
+		x = torch.tanh(x)
 		x = self.dropout(x)
 		x = self.out_proj(x)
 		return x
